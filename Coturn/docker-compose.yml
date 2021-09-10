@@ -1,0 +1,17 @@
+version: '2.4'
+
+services:
+  coturn:
+    image: bloodhunterd/coturn
+    environment:
+      REALM: example.com
+      SECRET: password
+    hostname: coturn
+    ports:
+      - '3478:3478'
+      - '5349:5349'
+    volumes:
+      - ./cert.pem:/etc/ssl/private/cert.pem:ro
+      - ./key.pem:/etc/ssl/private/key.pem:ro
+      - ./dhparams.pem:/etc/ssl/private/dhparams.pem:ro
+      - ./turndb:/var/lib/turn/turndb
