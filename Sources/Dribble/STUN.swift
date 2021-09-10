@@ -1,7 +1,6 @@
 import Crypto
 import NIO
 import NIOFoundationCompat
-import NIOPosix
 
 enum StunError: Error {
     case invalidAttributeFormat, invalidPacket, unsupported, invalidResponse, unknownAttribute
