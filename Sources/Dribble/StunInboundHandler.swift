@@ -34,7 +34,11 @@ final class StunInboundHandler: ChannelInboundHandler, StunMessageSender {
                         case (.v4(let lhs), .v4(let rhs)):
                             return lhs.address.sin_addr.s_addr == rhs.address.sin_addr.s_addr
                         case (.v6(let lhs), .v6(let rhs)):
-                            return lhs.address.sin6_addr.__u6_addr.__u6_addr32 == rhs.address.sin6_addr.__u6_addr.__u6_addr32
+                        #if swift(>=5.5) && os(Linux)
+                            return lhs.address.sin6_addr.__in6_u.__u6_addr32 == rhs.address.sin6_addr.__in6_u.__u6_addr32
+                        #else
+                             return lhs.address.sin6_addr.__u6_addr.__u6_addr32 == rhs.address.sin6_addr.__u6_addr.__u6_addr32
+                        #endif
                         case (.v4, _), (.v6, _), (.unixDomainSocket, _),
                             (_, .v4), (_, .v6), (_, .unixDomainSocket):
                             return false
