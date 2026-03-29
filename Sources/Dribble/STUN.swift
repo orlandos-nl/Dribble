@@ -6,7 +6,7 @@ enum StunError: Error {
     case invalidAttributeFormat, invalidPacket, unsupported, invalidResponse, unknownAttribute
 }
 
-public enum StunMessageType: UInt16 {
+public enum StunMessageType: UInt16, Sendable {
     // STUN Spec
     case bindingRequest = 0x0001
     case bindingResponse = 0x0101
@@ -30,7 +30,7 @@ public enum StunMessageType: UInt16 {
     case channelBindSuccess = 0x109
 }
 
-public struct StunParser: ByteToMessageDecoder {
+public struct StunParser: Sendable, ByteToMessageDecoder {
     public typealias InboundOut = StunMessage
     
     public init() {}
@@ -102,7 +102,7 @@ public struct StunParser: ByteToMessageDecoder {
     }
 }
 
-public struct StunTransactionId: Hashable {
+public struct StunTransactionId: Sendable, Hashable {
     internal var bytes: [UInt8]
     
     init(bytes: [UInt8]) {
@@ -121,7 +121,7 @@ public struct StunTransactionId: Hashable {
     }
 }
 
-public struct StunMessageHeader {
+public struct StunMessageHeader: Sendable {
     static let cookieArray: [UInt8] = [0x21, 0x12, 0xA4, 0x42]
     static let cookieHighBits: UInt16 = 0x2112
     static let cookie: UInt32 = 0x2112A442
@@ -135,7 +135,7 @@ public struct StunMessageHeader {
     public let transactionId: StunTransactionId
 }
 
-public enum StunAttributeType: UInt16 {
+public enum StunAttributeType: UInt16, Sendable {
     // STUN spec
     case mappedAddress = 0x0001
     case username = 0x0006
@@ -165,12 +165,12 @@ public enum StunAttributeType: UInt16 {
     case icmp = 0x8004
 }
 
-public enum AddressFamily: UInt8 {
+public enum AddressFamily: UInt8, Sendable {
     case ipv4 = 0x01
     case ipv6 = 0x02
 }
 
-public enum ResolvedStunAttribute {
+public enum ResolvedStunAttribute: Sendable {
     // 0                   1                   2                   3
     // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -397,7 +397,7 @@ public enum ResolvedStunAttribute {
     }
 }
 
-public struct StunAttribute {
+public struct StunAttribute: Sendable {
     public let type: UInt16
     var stunType: StunAttributeType? {
         StunAttributeType(rawValue: type)
@@ -439,7 +439,7 @@ public struct StunAttribute {
     }
 }
 
-public struct StunMessage {
+public struct StunMessage: Sendable {
     public internal(set) var header: StunMessageHeader
     public internal(set) var attributes: [StunAttribute]
     var body: ByteBuffer
@@ -551,6 +551,12 @@ extension ByteBuffer {
         writeInteger(attribute.type)
         writeInteger(attribute.length)
         writeImmutableBuffer(attribute.value)
+
+        // STUN attributes are padded to a 32-bit boundary, but the length field excludes padding.
+        let paddingLength = (4 - (Int(attribute.length) % 4)) % 4
+        if paddingLength > 0 {
+            writeBytes([UInt8](repeating: 0x00, count: paddingLength))
+        }
     }
     
     mutating func writeSocketAddress(_ address: SocketAddress, xor: Bool) {

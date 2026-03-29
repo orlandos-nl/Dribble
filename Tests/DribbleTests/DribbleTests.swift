@@ -1,106 +1,140 @@
+import Testing
 import NIO
-import XCTest
 @testable import Dribble
-import NIOPosix
 
-final class DribbleTests: XCTestCase {
-    func testExample() throws {
-        let remoteAddress = try SocketAddress.makeAddressResolvingHost("stun.l.google.com", port: 19302)
+@Suite
+struct DribbleTests {
+    @Test
+    func stunDatagramDecoder_decodesTwoMessages() async throws {
         let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        let server = try DatagramBootstrap(group: elg)
-            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .channelInitializer { channel in
-                channel.pipeline.addHandlers([
-                    EnvelopToByteBufferConverter { _ in
-                        _ = channel.close()
-                    },
-                    ByteToMessageHandler(StunParser()),
-                    
-                    StunInboundHandler(errorHandler: { error in
-                        XCTFail()
-                    }, attributesHandler: { message in
-                        for attribute in message.attributes {
-                            var value = attribute.value
-                            guard let type = StunAttributeType(rawValue: attribute.type) else {
-                                continue
-                            }
-                            let attribute = try! ResolvedStunAttribute(
-                                type: type,
-                                transactionId: message.header.transactionId,
-                                buffer: &value
-                            )
-                            print(attribute)
-                        }
-                        print(message)
-                    })
-                ])
-            }.bind(host: remoteAddress.protocol == .inet ? "0.0.0.0" : "::", port: 14135).wait()
-        
         do {
-            let message = StunMessage.bindingRequest(with: .ipv6)
-            var buffer = ByteBuffer()
-            buffer.writeStunMessage(message)
-            let envelope = AddressedEnvelope<ByteBuffer>(remoteAddress: remoteAddress, data: buffer)
-            try server.writeAndFlush(envelope).wait()
+            // Receiver bound locally.
+            let receiver = try await DatagramBootstrap(group: elg)
+                .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .channelInitializer { channel in
+                    channel.eventLoop.makeSucceededVoidFuture()
+                }
+                .bind(host: "127.0.0.1", port: 0)
+                .get()
+
+            let receiverAddress = try #require(receiver.localAddress)
+
+            // Sender bound locally.
+            let sender = try await DatagramBootstrap(group: elg)
+                .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .channelInitializer { channel in
+                    channel.eventLoop.makeSucceededVoidFuture()
+                }
+                .bind(host: "127.0.0.1", port: 0)
+                .get()
+
+            var continuation: AsyncStream<StunMessageType>.Continuation!
+            let stream = AsyncStream<StunMessageType> { continuation = $0 }
+
+            try await receiver.pipeline.addHandlers(
+                EnvelopToByteBufferConverter { _ in
+                    receiver.close(promise: nil)
+                },
+                StunDatagramDecoder(),
+                StunTypeStreamHandler(continuation: continuation)
+            )
+
+            // Send two datagrams.
+            do {
+                let message = StunMessage.bindingRequest(with: .ipv4)
+                var buffer = ByteBuffer()
+                buffer.writeStunMessage(message)
+                try await sender.writeAndFlush(AddressedEnvelope(remoteAddress: receiverAddress, data: buffer)).get()
+            }
+
+            do {
+                let message = StunMessage.allocationRequest()
+                var buffer = ByteBuffer()
+                buffer.writeStunMessage(message)
+                try await sender.writeAndFlush(AddressedEnvelope(remoteAddress: receiverAddress, data: buffer)).get()
+            }
+
+            let types = try await collectTypes(from: stream, count: 2, timeoutNanoseconds: 1_000_000_000)
+            #expect(types.count == 2)
+            #expect(types.first == .bindingRequest)
+            #expect(types.last == .allocateRequest)
+
+            sender.close(promise: nil)
+            receiver.close(promise: nil)
+            _ = try await sender.closeFuture.get()
+            _ = try await receiver.closeFuture.get()
+            try await shutdownEventLoopGroup(elg)
+        } catch {
+            // Best effort cleanup; failures should not mask the original error.
+            try? await shutdownEventLoopGroup(elg)
+            throw error
         }
-        
-        sleep(3)
-        
-        do {
-            let message = StunMessage.allocationRequest()
-            var buffer = ByteBuffer()
-            buffer.writeStunMessage(message)
-            let envelope = AddressedEnvelope<ByteBuffer>(remoteAddress: remoteAddress, data: buffer)
-            try server.writeAndFlush(envelope).wait()
-        }
-        
-        try server.close().wait()
-        try elg.syncShutdownGracefully()
     }
 }
 
-final class EnvelopToByteBufferConverter: ChannelInboundHandler {
-    public typealias InboundIn = AddressedEnvelope<ByteBuffer>
-    public typealias InboundOut = ByteBuffer
-    public typealias ErrorHandler = ((Error) -> ())?
-    
-    private let errorHandler: ErrorHandler
-    
-    init(errorHandler: ErrorHandler) {
-        self.errorHandler = errorHandler
+private final class StunTypeStreamHandler: @unchecked Sendable, ChannelInboundHandler {
+    typealias InboundIn = StunMessage
+
+    private let continuation: AsyncStream<StunMessageType>.Continuation
+
+    init(continuation: AsyncStream<StunMessageType>.Continuation) {
+        self.continuation = continuation
     }
-    
-    public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let envelope = self.unwrapInboundIn(data)
-        let byteBuffer = envelope.data
-        context.fireChannelRead(self.wrapInboundOut(byteBuffer))
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let message = unwrapInboundIn(data)
+        continuation.yield(message.header.type)
     }
-    
-    public func errorCaught(context: ChannelHandlerContext, error: Error) {
-        errorHandler?(error)
+
+    func channelInactive(context: ChannelHandlerContext) {
+        continuation.finish()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        continuation.finish()
         context.close(promise: nil)
     }
 }
 
-final class StunInboundHandler: ChannelInboundHandler {
-    public typealias InboundIn = StunMessage
-    public typealias OutboundOut = AddressedEnvelope<ByteBuffer>
-    public typealias ErrorHandler = ((Error) -> ())?
-    
-    private let errorHandler: ErrorHandler
-    private let attributesHandler:  (StunMessage) -> ()
-    
-    init(errorHandler: ErrorHandler, attributesHandler: @escaping (StunMessage) -> ()) {
-        self.errorHandler = errorHandler
-        self.attributesHandler = attributesHandler
+private struct TimeoutError: Error {}
+
+private func collectTypes(
+    from stream: AsyncStream<StunMessageType>,
+    count: Int,
+    timeoutNanoseconds: UInt64
+) async throws -> [StunMessageType] {
+    try await withThrowingTaskGroup(of: [StunMessageType].self) { group in
+        group.addTask {
+            var out: [StunMessageType] = []
+            out.reserveCapacity(count)
+            for await t in stream {
+                out.append(t)
+                if out.count == count {
+                    break
+                }
+            }
+            return out
+        }
+
+        group.addTask {
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            throw TimeoutError()
+        }
+
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
     }
-    
-    public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        attributesHandler(self.unwrapInboundIn(data))
-    }
-    
-    public func errorCaught(context: ChannelHandlerContext, error: Error) {
-        errorHandler?(error)
-        context.close(promise: nil)
+}
+
+private func shutdownEventLoopGroup(_ group: EventLoopGroup) async throws {
+    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        group.shutdownGracefully { error in
+            if let error {
+                cont.resume(throwing: error)
+            } else {
+                cont.resume(returning: ())
+            }
+        }
     }
 }

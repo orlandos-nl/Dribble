@@ -1,6 +1,6 @@
 import NIO
 
-final class EnvelopToByteBufferConverter: ChannelInboundHandler {
+final class EnvelopToByteBufferConverter: @unchecked Sendable, ChannelInboundHandler {
     public typealias InboundIn = AddressedEnvelope<ByteBuffer>
     public typealias InboundOut = ByteBuffer
     public typealias ErrorHandler = ((Error) -> ())?

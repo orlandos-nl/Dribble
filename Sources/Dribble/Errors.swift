@@ -1,5 +1,7 @@
 enum StunClientError: Error {
     case queryFailed
+    case timeout
+    case closed
 }
 
 enum TurnClientError: Error {

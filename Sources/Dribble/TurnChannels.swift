@@ -1,6 +1,6 @@
 import NIO
 
-struct TurnChannelData {
+struct TurnChannelData: Sendable {
     // 0x4000 through 0x4FFF
     let channelNumber: ChannelNumber
     var length: UInt16 {
@@ -9,7 +9,7 @@ struct TurnChannelData {
     var applicationData: ByteBuffer
 }
 
-public struct ChannelNumber: RawRepresentable {
+public struct ChannelNumber: RawRepresentable, Sendable {
     public let rawValue: UInt16
     
     public init(rawValue: UInt16) {
